@@ -3,7 +3,7 @@
  * Communicates with FastAPI backend running at http://localhost:8000
  */
 
-const BASE_URL = 'http://localhost:8000';
+const BASE_URL = 'https://sih-2026-backend-870h.onrender.com';
 
 /**
  * Gets active auth token from localStorage.
