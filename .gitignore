@@ -37,3 +37,6 @@ Thumbs.db
 # ANPR generated output
 anpr_result.mp4
 observations.json
+# Large AI models and test videos
+ai/models/*.pt
+ai/input/*.mp4
