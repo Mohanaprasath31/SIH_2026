@@ -1,0 +1,391 @@
+===== models.py =====
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel, Field
+
+
+# ============================================================================
+# HEALTH & STATUS MODELS
+# ============================================================================
+class HealthCheckResponse(BaseModel):
+    status: str = Field(..., description="API operational status")
+    database: str = Field(..., description="Supabase connection status")
+    version: str = Field(default="1.0.0", description="API version")
+
+
+# ============================================================================
+# CAMERA MODELS
+# ============================================================================
+class CameraResponse(BaseModel):
+    camera_id: str
+    name: str
+    location: Any  # PostGIS Geography Point string or Dict
+    road: str
+    direction: str
+    zone: str
+    status: str
+    health: Optional[Dict[str, Any]] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class CameraHealthResponse(BaseModel):
+    camera_id: str
+    name: str
+    status: str
+    is_online: bool
+    last_active: Optional[str] = None
+    last_heartbeat: Optional[str] = None
+    fps: float = 29.5
+    latency: float = 18.0
+    frame_drops: int = 0
+    network_status: str = "optimal"
+    ocr_confidence: float = 0.97
+    detection_rate: float = 0.98
+    observation_count: int = 0
+
+
+
+# ============================================================================
+# VEHICLE & OBSERVATION MODELS
+# ============================================================================
+class VehicleResponse(BaseModel):
+    vehicle_id: str
+    normalized_plate: str
+    first_seen: str
+    last_seen: str
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class VehicleObservationResponse(BaseModel):
+    observation_id: str
+    camera_id: str
+    plate_number: str
+    timestamp: str
+    location: Any
+    ocr_confidence: float
+    vehicle_type: str
+    direction: str
+    image_ref: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class VehicleSearchResponse(BaseModel):
+    query: str
+    total_matches: int
+    vehicles: List[VehicleResponse]
+    recent_observations: List[VehicleObservationResponse]
+
+
+# ============================================================================
+# TRAJECTORY MODELS
+# ============================================================================
+class TrajectoryPointResponse(BaseModel):
+    point_id: str
+    trajectory_id: str
+    camera_id: Optional[str] = None
+    timestamp: str
+    location: Any
+    confidence: float
+    created_at: Optional[str] = None
+
+
+class TrajectoryResponse(BaseModel):
+    trajectory_id: str
+    vehicle_id: str
+    start_time: str
+    end_time: str
+    camera_sequence: List[str]
+    distance: float
+    duration: float
+    confidence: float
+    created_at: Optional[str] = None
+    points: Optional[List[TrajectoryPointResponse]] = Field(default_factory=list)
+
+
+# ============================================================================
+# WATCHLIST MODELS
+# ============================================================================
+class WatchlistCreate(BaseModel):
+    plate_number: str
+    category: str = Field(..., example="Stolen Vehicle")
+    priority: str = Field(..., example="High")
+    status: str = Field(default="Active", example="Active")
+    validity: Optional[str] = Field(default=None, example="2026-12-31T23:59:59+05:30")
+
+
+class WatchlistResponse(BaseModel):
+    plate_number: str
+    category: str
+    priority: str
+    status: str
+    validity: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+# ============================================================================
+# ALERT MODELS
+# ============================================================================
+class AlertResponse(BaseModel):
+    alert_id: str
+    plate_number: str
+    camera_id: Optional[str] = None
+    alert_type: str
+    timestamp: str
+    severity: str
+    confidence: float
+    status: str
+    created_at: Optional[str] = None
+
+
+# ============================================================================
+# ANALYTICS MODELS
+# ============================================================================
+class HourlyVolumeItem(BaseModel):
+    hour: str
+    count: int
+    vehicle_types: Dict[str, int] = Field(default_factory=dict)
+
+
+class HourlyVolumeResponse(BaseModel):
+    total_observations: int
+    hourly_data: List[HourlyVolumeItem]
+
+
+class ODMatrixEntry(BaseModel):
+    origin_camera_id: str
+    origin_camera_name: str
+    destination_camera_id: str
+    destination_camera_name: str
+    trip_count: int
+
+
+class ODMatrixResponse(BaseModel):
+    total_trips: int
+    matrix: List[ODMatrixEntry]
+
+===== db.py =====
+import os
+from typing import Any, Optional
+from dotenv import load_dotenv
+
+load_dotenv()
+
+try:
+    from supabase import create_client, Client
+except ImportError:
+    Client = Any  # type: ignore
+
+
+def get_supabase_client() -> Optional[Any]:
+    """
+    Initializes and returns the Supabase client using environment variables.
+    Reads SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY from .env.
+    """
+    url = os.getenv("SUPABASE_URL")
+    key = (
+        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        or os.getenv("SUPABASE_SERVICE_KEY")
+        or os.getenv("SUPABASE_KEY")
+    )
+    if not url or not key:
+        return None
+    try:
+        return create_client(url, key)
+    except Exception as e:
+        print(f"[!] Error initializing Supabase client: {e}")
+        return None
+
+===== routers\vehicles.py =====
+from typing import List, Optional
+from fastapi import APIRouter, HTTPException, Query, Depends
+
+from backend.db import get_supabase_client
+from backend.models import (
+    VehicleResponse,
+    VehicleSearchResponse,
+    TrajectoryResponse,
+    TrajectoryPointResponse,
+)
+from backend.auth import require_roles, log_audit_access, UserProfile
+from backend.demo_data import OBSERVATIONS
+
+router = APIRouter(prefix="/vehicles", tags=["Vehicles"])
+
+@router.get("/search", response_model=VehicleSearchResponse)
+def search_vehicles(
+    plate: str = Query(..., description="Plate number or partial search query"),
+    current_user: UserProfile = Depends(require_roles(["investigator", "admin"]))
+):
+    """
+    GET /vehicles/search?plate=
+    Searches vehicles and recent observations by license plate number.
+    Restricted to investigator and admin roles. Logs audit access.
+    """
+    query_norm = plate.strip().upper()
+    
+    # Audit log vehicle observation query
+    log_audit_access(
+        user_id=current_user.user_id,
+        action="SELECT",
+        table_name="vehicle_observations",
+        row_reference=f"plate:{query_norm}"
+    )
+
+    supabase = get_supabase_client()
+    vehicles_res: List[dict] = []
+    observations_res: List[dict] = []
+
+    if supabase:
+        try:
+            v_data = supabase.table("vehicles").select("*").ilike("normalized_plate", f"%{query_norm}%").execute()
+            if v_data.data:
+                vehicles_res = v_data.data
+            
+            o_data = supabase.table("vehicle_observations").select("*").ilike("plate_number", f"%{query_norm}%").execute()
+            if o_data.data:
+                observations_res = o_data.data
+        except Exception as e:
+            print(f"[!] Supabase vehicle search error: {e}")
+
+    if not vehicles_res and not observations_res:
+        matching_obs = [
+            observation for observation in OBSERVATIONS[:5]
+            if query_norm in observation.get("plate_number", "").upper()
+        ]
+        if matching_obs:
+            first_seen = min(observation["timestamp"] for observation in matching_obs)
+            last_seen = max(observation["timestamp"] for observation in matching_obs)
+            vehicles_res = [{
+                "vehicle_id": f"demo-vehicle-{matching_obs[0]['plate_number']}",
+                "normalized_plate": matching_obs[0]["plate_number"],
+                "first_seen": first_seen,
+                "last_seen": last_seen,
+                "created_at": first_seen,
+                "updated_at": last_seen,
+            }]
+            observations_res = matching_obs
+
+    return VehicleSearchResponse(
+        query=plate,
+        total_matches=len(vehicles_res),
+        vehicles=vehicles_res,
+        recent_observations=observations_res
+    )
+
+
+@router.get("/{id}/trajectory", response_model=List[TrajectoryResponse])
+def get_vehicle_trajectory(
+    id: str,
+    current_user: UserProfile = Depends(require_roles(["investigator", "admin"]))
+):
+    """
+    GET /vehicles/{id}/trajectory
+    Returns trajectories associated with the specified vehicle ID.
+    Restricted to investigator and admin roles. Logs audit access.
+    """
+    # Audit log trajectory access
+    log_audit_access(
+        user_id=current_user.user_id,
+        action="SELECT",
+        table_name="trajectories",
+        row_reference=f"vehicle_id:{id}"
+    )
+
+    supabase = get_supabase_client()
+    if supabase:
+        try:
+            res = supabase.table("trajectories").select("*").eq("vehicle_id", id).execute()
+            if res.data and len(res.data) > 0:
+                return res.data
+        except Exception as e:
+            print(f"[!] Supabase trajectory error: {e}")
+
+    return []
+
+===== main.py =====
+import os
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+from backend.db import get_supabase_client
+from backend.models import HealthCheckResponse
+from backend.routers import cameras, vehicles, alerts, analytics, watchlist, admin
+from backend.streaming.consumers import trajectory_consumer, alert_consumer, analytics_consumer
+
+# Load environment configuration
+load_dotenv()
+
+app = FastAPI(
+    title="ANPR Traffic Surveillance System API",
+    description="High-performance backend API for automated number plate recognition, vehicle tracking, alerts, and analytics.",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+# Enable CORS for frontend development origins
+allowed_origins = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:8000",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+    "*"
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Register API Routers
+app.include_router(cameras.router)
+app.include_router(vehicles.router)
+app.include_router(alerts.router)
+app.include_router(analytics.router)
+app.include_router(watchlist.router)
+app.include_router(admin.router)
+
+
+from backend.services.camera_health import start_camera_health_monitor
+
+
+@app.on_event("startup")
+def startup_event():
+    """
+    Initializes streaming consumers and camera health background task on FastAPI server startup.
+    """
+    trajectory_consumer.start_consumer()
+    alert_consumer.start_consumer()
+    analytics_consumer.start_consumer()
+    start_camera_health_monitor()
+
+
+
+
+@app.get("/health", response_model=HealthCheckResponse, tags=["Health"])
+def health_check():
+    """
+    GET /health
+    Root health check verifying backend status and Supabase connectivity.
+    """
+    supabase = get_supabase_client()
+    db_status = "connected" if supabase is not None else "disconnected (offline/fallback mode)"
+    
+    return HealthCheckResponse(
+        status="healthy",
+        database=db_status,
+        version="1.0.0"
+    )
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)

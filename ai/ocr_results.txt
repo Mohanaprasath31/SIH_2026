@@ -1,0 +1,35 @@
+Loading YOLO...
+YOLO loaded successfully!
+Loading EasyOCR...
+EasyOCR loaded successfully!
+
+==============================
+VIDEO INFORMATION
+==============================
+Width: 1920
+Height: 1080
+FPS: 29.97002997002997
+Total frames: 803
+==============================
+Frame 768: HR26CC2083 | Confidence: 0.817
+Frame 768: HR26CC2083 | Confidence: 0.857
+Frame 770: HR26CC2093 | Confidence: 0.502
+Frame 776: HR26CC2083 | Confidence: 0.681
+Frame 778: HR26CC2083 | Confidence: 0.673
+Frame 782: HR26CC2083 | Confidence: 0.758
+Frame 782: HR26CC2083 | Confidence: 0.782
+Frame 786: HR26CC2083 | Confidence: 0.733
+Frame 788: HR26CC2083 | Confidence: 0.760
+Frame 790: HR26CC2083 | Confidence: 0.838
+Frame 792: HR26GC2083 | Confidence: 0.394
+Frame 794: IB26GC2083 | Confidence: 0.257
+
+==============================
+VIDEO ANPR COMPLETE
+==============================
+Total frames: 803
+Processed frames: 401
+Plate detections: 189
+Valid OCR results: 12
+Output: output/anpr_result.mp4
+==============================
